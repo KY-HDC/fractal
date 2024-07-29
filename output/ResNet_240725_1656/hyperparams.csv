@@ -1,0 +1,11 @@
+target_dim,10
+num_epochs,30
+nonlinearity,relu
+c_hidden,"[16, 32, 64]"
+batch_size,32
+tile_batch,8
+resolution,4
+mnmx,"[-4, 0, -4, 0]"
+dpi,100
+figsize,"[8, 8]"
+optimizer,sgd

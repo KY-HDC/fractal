@@ -1,0 +1,28 @@
+{
+    "model_hyperparams": {
+        "layers": 20,
+        "num_blocks": [
+            3,
+            3,
+            3
+        ],
+        "c_hidden": [
+            16,
+            32,
+            64
+        ],
+        "num_epochs": 30,
+        "batch_size": 100,
+        "activation": "relu"
+    },
+    "plot_hyperparams": {
+        "resolution": 32,
+        "initial_bound": [
+            -4,
+            0,
+            -4,
+            0
+        ]
+    },
+    "recording(UTC+9)": "240602013657"
+}

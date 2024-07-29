@@ -1,0 +1,31 @@
+{
+    "target_dim": 10,
+    "num_epochs": 30,
+    "nonlinearity": "relu",
+    "num_blocks": [
+        3,
+        3,
+        3
+    ],
+    "c_hidden": [
+        16,
+        32,
+        64
+    ],
+    "batch_size": 32,
+    "default_outer_batch_size": 32,
+    "resolution": 4,
+    "mnmx": [
+        -4,
+        0,
+        -4,
+        0
+    ],
+    "dpi": 100,
+    "figsize": [
+        16,
+        8
+    ],
+    "interactive_gui": 1,
+    "optimizer": "sgd"
+}
