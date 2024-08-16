@@ -75,13 +75,17 @@ class ResNet(nn.Module):
         return x
 
 
-# JAX run
+# Resnet's structure
 def net(variables, x: jnp.array, on_train=True):
     params = variables['params']
     batch_stats = variables['batch_stats']
     
     # input.T
-    x = jnp.transpose(x, [0, 3, 1, 2])
+    print(x.shape)
+    jax.debug.print("shape={s}", s=x.shape)
+    x = jnp.transpose(x, [0, 3, 1, 2])  # NHWC -> NCHW
+    jax.debug.print("transposed={s}", s=x.shape)
+    print(x.shape)
 
     # 1st conv
     x = jax.lax.conv(x, params['Conv_0']['kernel'], window_strides=(1, 1), padding='SAME')
@@ -156,92 +160,21 @@ def batchnorm(x, params_bn, batch_stats_bn, momentum=0.9, eps=1e-6, on_train=Tru
 
     return x, batch_stats_bn
     
+
 @partial(jax.jit, static_argnums=3)
 def loss_fn(variables, x, y, on_train=True):
     logits, variables = net(variables, x, on_train=on_train)
-    # return optax.softmax_cross_entropy_with_integer_labels(jnp.clip(logits, 1e-10, 1.), y).mean(), (logits, variables)
-    return optax.softmax_cross_entropy_with_integer_labels(logits).mean(), (logits, variables)
+    return optax.softmax_cross_entropy_with_integer_labels(logits, y).mean(), (logits, variables)
 
 
 # @jax.jit
+# TODO: How about optax?
 @partial(jax.vmap, in_axes=(0, None, None, 0))
 @partial(jax.pmap, axis_name='batch', in_axes=(None, 0, 0, None), out_axes=(None, 0))
 def update_fn(variables, x, y, lr):
-    (loss, (logits, variables)), grads = jax.value_and_grad(loss_fn, has_aux=True)(variables, x, y)
-    # grads = jax.lax.pmean(grads, axis_name='batch')
-    # jax.debug.print("params={v}", v=jax.tree_map(jnp.shape, variables['params']))
-    # jax.debug.print("lr={v}", v=jax.tree_map(jnp.shape, lr))
-    # jax.debug.print("grads mean={v}", v=grads['params']['ResNetBlock_0']['Conv_0']['kernel'].mean())
-    # jax.debug.print("grads var={v}", v=grads['params']['ResNetBlock_0']['Conv_0']['kernel'].var())
-    
-    
+    (loss, (logits, variables)), grads = jax.value_and_grad(loss_fn, has_aux=True)(variables, x, y)    
     variables['params'] = jax.tree_map(lambda param, lr, g: param - lr * g, variables['params'], lr, grads['params'])
     return variables, (loss, logits)
-
-# @partial(jax.vmap, in_axes=(0, None, None, 0, None))
-def train_on_the_track(variables, batches, tbatches, hparams, epochs, desc=None):
-    
-    loss_archive, acc_archive = [], []
-    tloss_archive, tacc_archive = [], []
-
-    params, lr = duplicate_theta(variables['params'], hparams)
-    variables['params'] = params
-
-    for _ in tqdm(range(epochs), total=epochs, desc=desc, leave=False):
-        loss, acc, tloss, tacc = train_and_validate_oneEpoch(variables, batches, tbatches, lr)
-        loss_archive.append(loss)
-        acc_archive.append(acc)
-        tloss_archive.append(tloss)
-        tacc_archive.append(tacc)
-    
-    # loss_archive = means_device(loss_archive, pmap_dim=1)
-    # acc_archive = means_device(acc_archive, pmap_dim=1)
-    # tloss_archive = means_device(tloss_archive, pmap_dim=1)
-    # tacc_archive = means_device(tacc_archive, pmap_dim=1)
-    
-    return loss_archive, acc_archive, tloss_archive, tacc_archive
-
-@partial(jax.vmap, in_axes=(0, 0), out_axes=(0, 0))     # induced trace; makes error; tree_map seems be not suspect but vmap does.
-def duplicate_theta(params, hparams):
-    params = jax.tree_map(lambda param: param + hparams[0], params)
-    lr = jax.tree_map(lambda x: jnp.array(hparams[1], dtype=jnp.float32), params)    
-    return params, lr
-
-# @partial(jax.vmap, in_axes=(0, None, None, 0), out_axes=(0, 0, 0, 0))
-def train_and_validate_oneEpoch(variables, batches, tbatches, lr):
-    
-    # training
-    for batch in batches.as_numpy_iterator():
-        # x = shard_data(batch['image'], 4)
-        # y = shard_data(batch['label'], 4)
-        x = batch['image']
-        y = batch['label']
-        variables, (loss, logits) = update_fn(variables, x, y, lr)
-        # jax.debug.print("logits: {l}", l=logits)
-        logits = logits.reshape((-1, logits.shape[-1]))
-        y = y.reshape((-1,))
-        acc = (logits.argmax(axis=-1)==y).mean()
-        
-    # validating
-    # pmapped_loss_fn = jax.pmap(loss_fn, axis_name='batch', in_axes=(None, 0, 0, None))
-    for tbatch in tbatches.as_numpy_iterator():
-        # tx = shard_data(tbatch['image'], 4)
-        # ty = shard_data(tbatch['label'], 4)
-        tx = tbatch['image']
-        ty = tbatch['label']
-        
-        # tloss, (tlogits, _) = pmapped_loss_fn(variables, tx, ty, False)
-        tloss, (tlogits, _) = loss_fn(variables, tx, ty, False)
-        tlogits = tlogits.reshape((-1, tlogits.shape[-1]))
-        ty = ty.reshape((-1,))
-        tacc = (tlogits.argmax(axis=-1)==y).mean()
-        
-    return loss, acc, tloss, tacc
-
-
-def accuracy(logits, y):
-    return (logits.argmax(axis=-1) == y)
-
 
 def initialize(module, rng, x):
     variables = module.init(jax.random.PRNGKey(rng), x)
@@ -255,13 +188,17 @@ def initialize(module, rng, x):
         return x
     variables['params'] = jax.tree_util.tree_map_with_path(conv_dog, variables['params'])
     variables['batch_stats'] = jax.tree_map(lambda stats: stats.reshape((1, stats.shape[0], 1, 1)), variables['batch_stats'])
+    # variables['batch_stats'] = jax.tree_map(lambda stats: stats.reshape((1, stats.shape[0], 1, 1)), variables['batch_stats'])
     return variables
-        
+
+
 
 if __name__ == "__main__":
-    resolution = 3
+
+    resolution = 256
     resnet11 = ResNet(num_classes=10, act_fn=nn.relu, block_class=ResNetBlock)
     variables = initialize(resnet11, 42, jnp.ones((1, 28, 28, 1)))
     variables = jax.tree_map(lambda x: jnp.tile(x, (resolution,)+(1,)*len(x.shape)), variables)
     # loss_archive, logit_archive, tloss_archive, tlogits_archive = train_on_the_track(variables, train_ds, lr=0.001, epochs=1000)
     print("Done!")
+    print(jax.tree_map(jnp.shape, variables))

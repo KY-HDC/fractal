@@ -66,6 +66,9 @@ This project is demonstration that the convergence boundary of training loss is 
 
 # Hardware Requirements
 
-Nvidia A100 80GB x1
+Nvidia A100 80GB x4
 
-CPU로도 가능하나, 
+# Dependency
+
+CUDA TOOLKIT 12.5 \
+CUDNN 9.3

@@ -168,4 +168,6 @@ cython_debug/
 *.json
 *.pyc
 *.csv
+telegram_token.json
+
 >>>>>>> e1ea0e975882e2eb999cad40539a8a24406d4490

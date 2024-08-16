@@ -9,7 +9,7 @@ parser.add_argument('--target_dim', default=10, type=int, help="이미지의 라
 parser.add_argument('--nonlinearity', default='relu', type=str, help="convoluion 직후에 적용할 activation입니다. 지금은 'relu'와 'leaky'만 지원해요.")
 parser.add_argument('--optimizer', default='sgd', type=str, help="optmizer입니다. 지금은 'sgd'와 'adam'만 지원해요. ")
 parser.add_argument('--c_hidden', default=[16, 32, 64], type=int, nargs='+', help="block을 통과하고 나서 나오는 텐서의 채널 수를 설정합니다.\neg. --c_hidden 16 32 64")
-parser.add_argument('--tile_batch', default=1024, type=int, help="1번 training할 동안 몇 개의 모델을 동시에 굴릴지 설정합니다.\n모델 수(resolution**2)가 이거보다 많으면 절반으로 쪼개어 이거보다 작을 때까지 반복합니다.\n이 값이 클수록 한번에 많은 모델을 학습시킬 수 있지만, 너무 크면 OOM이 발생할 수 있습니다.\n2의 제곱수로 조절하세요.")
+parser.add_argument('--tile_batch', default=32, type=int, help="1번 training할 동안 몇 개의 모델을 동시에 굴릴지 설정합니다.\n모델 수(resolution**2)가 이거보다 많으면 절반으로 쪼개어 이거보다 작을 때까지 반복합니다.\n이 값이 클수록 한번에 많은 모델을 학습시킬 수 있지만, 너무 크면 OOM이 발생할 수 있습니다.\n2의 제곱수로 조절하세요.")
 parser.add_argument('--mnmx', default=[-4, 0, -4, 0], type=int, nargs='+', help="learning rate의 범위 하한값, 상한값, weight offset의 범위 하한값, 상한값을 설정합니다. eg. --mnmx -4 0 -4 0")
 parser.add_argument('--dpi', default=100, type=int, help="PNG 파일의 해상도 값입니다. 냅두셔도 됩니다.")
 parser.add_argument('--figsize', default=[8, 8], type=int, nargs='+', help="lossmap의 figure size를 결정합니다. 정사각형꼴로 설정하세요.")
@@ -51,50 +51,10 @@ if optimizer == 'sgd':
 elif optimizer == 'adam':
     optimizer = optax.adam
 
-# Tiling and plotting functions
-@partial(jax.vmap, in_axes=(None, 0, None))
-def train_step_v(variables, lr, model):
-    state = TrainState.create(
-        apply_fn=model.apply,
-        params=jax.tree_util.tree_map(lambda param: param + lr[0], variables['params']),
-        batch_stats=variables['batch_stats'],
-        tx=optimizer(lr[1])
-    )
-
-    M_train = []
-    for _ in tqdm(range(num_epochs), total=num_epochs, leave=False, desc='Epochs'):
-        for batch in tqdm(train_ds.as_numpy_iterator(), total=total_batch, leave=False, desc='Iter'):
-            state, metrics = train_step(state, batch)
-        M_train.append(metrics)
-
-    return M_train
-
-def make_array(metrics_v, target):
-    return np.vstack([metrics_v[i][target] for i in range(num_epochs)]).T     # (px, epochs)
-
-def train_step_tile(variables, lrs, model, tile_batch=tile_batch):
-    bs = lrs.shape[0]
-    particles = bs//tile_batch
-    if particles > 1:
-        print(f"Splitting tiles as {bs}->{bs//2}tiles.")
-    if bs > tile_batch:
-        metrics1 = train_step_tile(variables, lrs[:bs//2], model)
-        metrics2 = train_step_tile(variables, lrs[bs//2:], model)
-
-        acc_v1 = metrics1['accuracy']
-        loss_v1 = metrics1['loss']
-        acc_v2 = metrics2['accuracy']
-        loss_v2 = metrics2['loss']
-        acc = np.vstack([acc_v1, acc_v2])
-        loss = np.vstack([loss_v1, loss_v2])
-
-        return {'accuracy': acc, 'loss': loss}
-    metrics = train_step_v(variables, lrs, model)
-    acc, loss = make_array(metrics, 'accuracy'), make_array(metrics, 'loss')
-    return {'accuracy': acc, 'loss': loss}
 
 def sketch_convmap(conv, title, saveas=None):
     plot_img(conv.reshape((resolution, resolution)), mnmx, title=title, savename=saveas)
+
 
 
 # Scaling sketch
@@ -105,12 +65,12 @@ train_ds, test_ds = prepare_dataset(batch_size)
 total_batch = train_ds.cardinality().numpy()
 total_tbatch = test_ds.cardinality().numpy()
 
-batch = next(iter(train_ds))
+batch = next(iter(train_ds))    # a batch for initializing
 x, y = batch['image'], batch['label']
 
 # Model loading
 resnet20 = ResNet(10, nonlinearity, ResNetBlock)
-variables = resnet20.init(jax.random.PRNGKey(1), x)
+variables = resnet20.init(jax.random.PRNGKey(1), x)     ### 아래 tile까는 과정에서 batch_stats들이 params-like shape으로 바뀌어버림. 이거 어디 잘못됨.
 
 # Session
 msg_start = 'Training start!\n\n' + \
@@ -120,7 +80,15 @@ msg_start = 'Training start!\n\n' + \
     pformat(args) + \
     '\n' + '='*50
 send_alaram(msg_start)
-metrics_tile = train_step_tile(variables, lrs, resnet20, tile_batch=tile_batch)  # (px, epoch)
+# metrics_tile = train_step_tile(variables, lrs, resnet20, tile_batch=tile_batch)  # (px, epoch)
+V, tV = split_and_train(
+        resnet=resnet20,
+        hparams=lrs,
+        batches=train_ds,
+        tbatches=test_ds,
+        num_epochs=num_epochs,
+        tile_batch=tile_batch
+        )
 
 # Draw fractal image
 send_alaram('Drawing...')
