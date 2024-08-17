@@ -12,22 +12,34 @@ from datasets.mnist import x, y
 x_init, y_init = x, y
 
 def split_and_train(resnet, hparams, batches, tbatches, num_epochs, tile_batch):
-    
+    '''
+    240818. 
+    첫 tile의 학습 이후, 두번째 tile에서 kernel shape가 이상하게 되어 들어온다.
+    그리고 메모리 관리에서도 문제가 생긴다. 메모리 정리가 덜됐을 때 다시 돌린 경우,
+    tile_batch=10도 버티지못하고 6에서 끊긴다.
+    그러므로 이 문제를 해결하려면 tile 각각 loss를 저장해서 메모리는 없애는 식으로
+    해야될 것 같다. 한번에 돌린답시고 kernel 등을 기억해야 되다보니
+    메모리가 과다하게 사용되는 것 같다.
+    split 후 initialize->tiling->train이 이루어지는데 tiling은 
+    '''
     # Cut off the learning rates as bite size
     bs = hparams.shape[0]
+    print("bs(raw):", bs)
     if bs > tile_batch:
         train_loss1, test_loss1 = split_and_train(resnet, hparams[:bs//2, ], batches, tbatches, num_epochs, tile_batch)
         train_loss2, test_loss2 = split_and_train(resnet, hparams[bs//2:, ], batches, tbatches, num_epochs, tile_batch)
         return jnp.concatenate((train_loss1, train_loss2), axis=0), jnp.concatenate((test_loss1, test_loss2), axis=0)
 
-    variables = initialize(resnet, 42, x_init)
-    variables = jax.tree_map(lambda x: jnp.tile(x_init, (bs,)+(1,)*len(x.shape)), variables)
+    print("bs", bs)
+    variables = initialize(resnet, 42, x_init)  # kernel's shape=(OIHW)
+    variables = jax.tree_map(lambda v: jnp.tile(v, (bs,)+(1,)*len(v.shape)), variables)    # kernel's shape=(rOIHW); r=(P)V=resolution**2
     hparams = hparams.reshape((hparams.shape[0], hparams.shape[-1]))
     variables['params'], hparams = combo_synchronize(variables['params'], hparams)
+    print("After split, ", jax.tree_map(jnp.shape, variables['params']))
     ### tree_map
     # apply each other offset and learning rate
     # desc = f'[Tile {tile_batch}/{math.ceil(resolution**2/tile_batch)}] Training-epochs: '
-    print(jax.tree_map(jnp.shape, variables))
+    # print(jax.tree_map(jnp.shape, variables))
     loss_archive, acc_archive, tloss_archive, tacc_archive = train_on_the_track(
         variables, batches, tbatches, hparams, num_epochs)
 
@@ -51,13 +63,17 @@ def convergence_measure(v, max_val=1e6):
 
 
 def train_on_the_track(variables, batches, tbatches, hparams, epochs):
-    
+    ''' Variables' kernel: `((P)VHWIO)`; resolution**2=PV \\
+        Batches' image: `(BHWC)`; N=B=batch_size \\
+        Hparams: `((P)V, 2)`
+    '''
+
     loss_archive, acc_archive = [], []
     tloss_archive, tacc_archive = [], []
 
     # params, lr = duplicate_theta(variables['params'], hparams)
     # variables['params'] = params
-    print(jax.tree_map(jnp.shape, hparams))
+    # print(jax.tree_map(jnp.shape, hparams))
     for _ in tqdm(range(epochs), total=epochs, leave=False):
         
         loss, acc, tloss, tacc = train_and_validate_oneEpoch(variables, batches, tbatches, hparams)
@@ -76,28 +92,41 @@ def train_on_the_track(variables, batches, tbatches, hparams, epochs):
 
 
 def train_and_validate_oneEpoch(variables, batches, tbatches, lr):
-    
+    ''' Variables' kernel: `((P)VHWIO)`; resolution**2=PV \\
+    Batches' image: `(BHWC)`; N=B=batch_size \\
+    lr(Hparams): `((P)V, 2)`
+    '''
+
     # Training
     for batch in batches:
         x = batch['image']
         y = batch['label']
-        print("V=", str(jax.tree_map(jnp.shape, variables))[:200])
-        print("X=", str(jax.tree_map(jnp.shape, x))[:200])
-        print("LR=", str(jax.tree_map(jnp.shape, lr))[:200])
+        # print("V=", str(jax.tree_map(jnp.shape, variables))[:200])
+        # print("X=", str(jax.tree_map(jnp.shape, x))[:200])
+        # print("LR=", str(jax.tree_map(jnp.shape, lr))[:200])
+        # print("In train_and_validate_oneEpoch, X:", x.shape, "VS P:", variables['params']['Conv_0']['kernel'].shape)
 
         variables, (loss, logits) = update_fn(variables, x, y, lr)
-        logits = logits.reshape((-1, logits.shape[-1]))
-        y = y.reshape((-1,))
-        acc = (logits.argmax(axis=-1)==y).mean()
+        # print('loss', loss.shape)   # 
+        # print('logits', logits.shape)
+        # print('infer: ', (logits.argmax(axis=-1)==y).shape)
+        # print('Y: ', y.shape)
+
+        # logits = logits.reshape((-1, logits.shape[-1]))
+        # y = y.reshape((-1,))
+        # y = jnp.tile(y)
+        acc = (logits.argmax(axis=-1)==y).mean(axis=-1)
+        # print('acc: ', acc.shape)
+        # acc = jnp.mean(acc, axis=1)
         
     # Evaluation
     for tbatch in tbatches:
         tx = tbatch['image']
         ty = tbatch['label']
         tloss, (tlogits, _) = loss_fn(variables, tx, ty, False)
-        tlogits = tlogits.reshape((-1, tlogits.shape[-1]))
-        ty = ty.reshape((-1,))
-        tacc = (tlogits.argmax(axis=-1)==y).mean()
+        # tlogits = tlogits.reshape((-1, tlogits.shape[-1]))
+        # ty = ty.reshape((-1,))
+        tacc = (tlogits.argmax(axis=-1)==y).mean(axis=-1)
         
     return loss, acc, tloss, tacc
 

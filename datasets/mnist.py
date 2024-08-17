@@ -14,8 +14,8 @@ def prepare_dataset(batch_size, seed=42):
     # Load and normalize
     train_ds = tfds.load('mnist', split='train')
     test_ds = tfds.load('mnist', split='test')
-    train_ds = data_normalize(train_ds).shuffle(buffer_size=10, seed=seed).batch(batch_size)
-    test_ds = data_normalize(test_ds).shuffle(buffer_size=10, seed=seed).batch(batch_size)
+    train_ds = data_normalize(train_ds).shuffle(buffer_size=10, seed=seed).batch(batch_size).take(10)
+    test_ds = data_normalize(test_ds).shuffle(buffer_size=10, seed=seed).batch(batch_size).take(10)
     
     # Info
     total_batch = train_ds.cardinality().numpy()

@@ -1,5 +1,8 @@
 # For running test
-import os; os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=4'
+# import os; os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=4'
+# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
+# os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"]="1.0"
+# os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform"
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +25,9 @@ This code will run resnet from the weights built by FLAX.
 
 # Initialization
 def initialize(module, rng, x, amp=1.):
+    ''' Returns variables. \\
+        This kernel's shape is `(HWIO)->(OIHW)`.
+    '''
     variables = module.init(jax.random.PRNGKey(rng), x)
     variables['params']['Dense_0']['kernel'] = \
         jax.nn.initializers.xavier_normal()(jax.random.PRNGKey(1), (50176, 10))  # 64 * 28**2
@@ -45,11 +51,13 @@ def net(variables, x: jnp.array, on_train=True):
 
     params = variables['params']
     batch_stats = variables['batch_stats']
-    
+
+    print("In net, X:", x.shape, "VS P:", params['Conv_0']['kernel'].shape)
+
     # input.T: NHWC -> NCHW
     x = jnp.transpose(x, [0, 3, 1, 2])
-    print(x.shape)
-    # 1st conv
+    
+    # 1st conv: img(NHWC->NCHW), params(HWIO->OIHW)
     x = jax.lax.conv(x, params['Conv_0']['kernel'], window_strides=(1, 1), padding='SAME')
     x, batch_stats['BatchNorm_0'] = batchnorm(x, params['BatchNorm_0'], batch_stats['BatchNorm_0'], on_train=on_train)
     x = jax.lax.cond(leaky, nn.leaky_relu, nn.relu, x)
@@ -101,9 +109,12 @@ def loss_fn(variables, x, y, on_train=True):
 # TODO: Batches <- All devices must use same batches.
 # TODO: Weights <- Each device uses 1/4 of models.
 # @partial(jax.pmap, in_axes=(0, None, None, 0))
-@partial(jax.vmap, in_axes=(0, None, None, 0))
-@jax.jit
+@partial(jax.vmap, in_axes=(0, None, None, 0), out_axes=(0, (0, 0)))
 def update_fn(variables, x, y, lr):
+    ''' Variables' kernel: `((P)VHWIO)->()`; resolution**2=(P)V \\
+    Batches' image: `(BHWC)`; N=B=batch_size \\
+    Hparams: `((P)V, 2)`
+    '''
     (loss, (logits, variables)), grads = jax.value_and_grad(
         loss_fn, has_aux=True)(variables, x, y)    
     variables['params'] = jax.tree_map(
